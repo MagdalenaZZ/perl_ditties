@@ -1,1 +1,5 @@
-# perl_ditties
+
+
+magz perl-scripts from history and beyond
+
+

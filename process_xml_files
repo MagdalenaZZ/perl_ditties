@@ -1,0 +1,302 @@
+#!/usr/bin/perl
+
+
+use strict;
+use warnings;
+#use cbc::setup;
+use XML::LibXML;
+#use XML::XML2JSON;
+use Data::Dumper;
+
+
+my $data;
+my @files = split(/\n/, `find /Users/mzarowiecki/Desktop/ClinicalTrialExamples/ -type f`);
+#print Dumper(\@files);
+my $count = 0;
+my $diseases;
+
+
+
+# only works when 
+sub findvalues {
+	my $doc = shift;
+	my $xpath = shift;
+	my @nodes = $doc->findnodes($xpath);
+	my @values = map { $_->textContent } @nodes;
+	return (wantarray ? @values : join(',', @values));
+}
+
+
+# neds centralising
+my $month_map = {
+'January' 	=> '01',
+'February' 	=> '02',
+'March' 	=> '03',
+'April'		=> '04',
+'May' 		=> '05',
+'June' 		=> '06',
+'July' 		=> '07',
+'August' 	=> '08',
+'September' 	=> '09',
+'October' 	=> '10',
+'November' 	=> '11',
+'December' 	=> '12'
+};
+
+
+
+my ($clinical_trials, $interventions, $multiple_values);
+
+
+
+
+
+my $parser = XML::LibXML->new;
+
+
+
+my $multi_values = {
+	'phase' => '/clinical_study/phase',
+	'condition' => '/clinical_study/condition',
+	'intervention' => '/clinical_study/intervention/intervention_name',
+	'mesh_term_intervention' => '/clinical_study/intervention_browse/mesh_term',
+	'mesh_term_condition' => '/clinical_study/condition_browse/mesh_term',
+	'keyword' => '/clinical_study/keyword',
+	'sponsor' => '/clinical_study/sponsors/lead_sponsor/agency'
+};
+
+
+print("Hello\n");
+
+
+foreach my $file (@files) {
+	print ".$count" if ($count % 10000 == 0);
+	$count++;
+
+	#print "$file\t$count\n";
+
+	if (!-s $file) {
+		#print "Next $file\n";
+		next;
+	}
+
+	my $doc = $parser->parse_file($file) || die 'xml error';
+	my $nct_id = $doc->findvalue('/clinical_study/id_info/nct_id');
+
+	#print ("DOC: $doc\n");   # header utf-8
+	#print ("NTC:$nct_id\n");  # NTC number
+
+	# single value(s)
+	my $overall_official = findvalues($doc, '/clinical_study/overall_official/last_name');
+	my $brief_title = findvalues($doc, '/clinical_study/brief_title');
+	my $official_title = findvalues($doc, '/clinical_study/official_title');
+	#my $url = findvalues($doc, '/clinical_study/required_header/url');
+	#print ("URL:$url\n");  # URL
+
+###
+	my $sponsor = findvalues($doc, '/clinical_study/sponsors/lead_sponsor/agency');
+	my $sponsor2 =$sponsor;
+      	$sponsor2=~s/[^[:ascii:]]+//g;
+	print ("SPO:$sponsor2\n");  # 
+		
+	my $brief_summary = findvalues($doc, '/clinical_study/brief_summary/textblock');
+	my $brief_summary2 =$brief_summary;
+      	$brief_summary2=~s/[^[:ascii:]]+//g;
+	$brief_summary2=~s/\n/ /g;
+	$brief_summary2=~s/  / /g;
+	$brief_summary2=~s/  / /g;
+	$brief_summary2=~s/  / /g;
+	$brief_summary2=~s/  / /g;
+	$brief_summary2=~s/  / /g;
+	print ("BS:$brief_summary2\n");  # 
+
+
+	
+
+###
+	
+	#print ("OO:$overall_official\n");  # Person leading the study
+	my $brief_title2 =$brief_title;
+      	$brief_title2=~s/[^[:ascii:]]+//g; 
+	my $official_title2 =$official_title;
+      	$official_title2=~s/[^[:ascii:]]+//g; 
+	print ("BT:$brief_title2\n");  # Short title
+	print ("OT:$official_title2\n");  # Long title
+
+	# dates need post-processing
+	my $dates;
+	foreach my $date_key ('start_date', 'completion_date', 'primary_completion_date') {
+		my $date = $doc->findvalue('/clinical_study/'.$date_key);
+		if ($date) {
+			my ($month, $year) = split(/ /, $date);
+			$date = $year.'-'.$month_map->{$month};
+			#print Dumper($date); <STDIN>;
+		}
+		$dates->{$date_key} = $date;
+	}
+
+
+	# complex fields
+	my $drugs;
+	my @diseases = ();
+	my @interventions = $doc->findnodes('/clinical_study/intervention');
+	
+	# Interventions
+
+	foreach my $intervention (@interventions) {
+		
+		my @nodes = $intervention->findnodes('*');
+		my $intervention_info = {};
+		foreach my $node (@nodes) {
+			push @{$intervention_info->{$node->nodeName}}, $node->textContent;
+			print ("INTER: Dumper($node->nodeName, $node->textContent)\n");  # some, multiple headers
+		}
+		push @{$interventions->{$nct_id}}, $intervention_info;
+	}
+	#print Dumper($interventions->{$nct_id}); <STDIN>;
+
+	foreach my $drug (@{$interventions->{$nct_id}}) {	
+		if ($drug->{intervention_type}->[0] eq 'Drug') {
+			$drugs->{$drug->{intervention_name}->[0]} = 1;
+		}
+		print ("DRUG: ", Dumper($drug) . "#");
+	}
+
+
+
+	# multiple values
+	foreach my $key (keys(%$multi_values)) {
+		my $xpath = $multi_values->{$key};
+		my @values = findvalues($doc, $xpath);
+		$multiple_values->{$key}->{$nct_id} = \@values;
+	}
+	
+	#print Dumper($multiple_values); <STDIN>;
+	
+	
+	# different phases need to be separated
+	#
+	my $phase = $multiple_values->{phase}->{$nct_id}->[0];
+	my @phases;
+
+	if (length $phase) {
+		if ($phase ne 'N/A') {
+			if ($phase=~/\w+/) {
+				@phases = split(/\//, $phase);
+				$multiple_values->{phase}->{$nct_id} = \@phases;
+			}
+		}
+	}
+	
+
+	#print Dumper($multiple_values->{phase}->{$nct_id}); <STDIN>;
+
+
+	my $record = {
+		'NCT_ID' => $nct_id,
+		'BRIEF_TITLE' => $brief_title,
+		'OFFICIAL_TITLE' => $official_title,		
+		'START_DATE' => $dates->{start_date},
+		'COMPLETION_DATE' => $dates->{completion_date},
+		'PRIMARY_COMPLETION_DATE' => $dates->{primary_completion_date},
+		'FINISH_DATE' => $dates->{completion_date} || $dates->{primary_completion_date},
+		'OVERALL_OFFICIAL' => $overall_official
+	};
+
+	#print Dumper($record); <STDIN>;
+	#print Dumper($record); exit;
+
+	# temporary hack to deal with utf8 and too long fields, need something better
+	foreach my $key (keys(%$record)) {
+		$record->{$key} =~ s/[^[:ascii:]]+//g;
+		$record->{$key} = substr($record->{$key}, 0, 1000);
+	}
+
+	$clinical_trials->{$nct_id} = $record;
+	#last if ($count >= 250);
+}
+
+
+foreach my $nct_id (keys(%$clinical_trials)) {
+	#print "$nct_id\n";
+}
+
+
+foreach my $nct_id (keys(%$interventions)) {
+	foreach my $info (@{$interventions->{$nct_id}}) {
+		#print Dumper($info); <STDIN>;
+		my $name = join(', ', @{$info->{intervention_name}});
+		$name =~ s/[^[:ascii:]]+//g;
+		my $record = {
+			NCT_ID => $nct_id,
+			NAME => $name,
+			TYPE => join(', ', @{$info->{intervention_type}}),
+		};
+		print "RECORD:". Dumper($record) . "\n";
+	}
+}
+
+
+
+# Sponsor is a childrens hospital
+# $sponsor2=~/child/  # no capitals
+
+
+#
+
+
+
+
+
+__END__
+
+
+# all io in one hit
+foreach my $nct_id (keys(%$clinical_trials)) {
+	my $record = $clinical_trials->{$nct_id};
+	generic::datalayer::insert_record3('UNIPROT', 'CLINICAL_TRIAL', '', $record);
+}
+
+foreach my $nct_id (keys(%$interventions)) {
+	foreach my $info (@{$interventions->{$nct_id}}) {
+		#print Dumper($info); <STDIN>;
+		my $name = join(', ', @{$info->{intervention_name}});
+		$name =~ s/[^[:ascii:]]+//g;
+		my $record = {
+			NCT_ID => $nct_id,
+			NAME => $name,
+			TYPE => join(', ', @{$info->{intervention_type}}),
+		};
+		generic::datalayer::insert_record3('UNIPROT', 'CLINICAL_TRIAL_INTERVENTION', '', $record);
+	}
+}
+
+
+
+foreach my $key (keys(%$multiple_values)) {
+	foreach my $nct_id (keys(%{$multiple_values->{$key}})) {
+		foreach my $value (@{$multiple_values->{$key}->{$nct_id}}) {
+			$value =~ s/[^[:ascii:]]+//g;
+			#my $table = 'CLINICAL_TRIAL_'.uc($key);
+			my $record = {
+				'NCT_ID' => $nct_id,
+				'TYPE' => $key,
+				'VALUE' => $value
+			};
+			generic::datalayer::insert_record3('UNIPROT', 'CLINICAL_TRIAL_METADATA', '', $record);
+		}
+	}
+}
+
+
+
+generic::datalayer::populate_records3('UNIPROT', 'CLINICAL_TRIAL');
+generic::datalayer::populate_records3('UNIPROT', 'CLINICAL_TRIAL_INTERVENTION');
+generic::datalayer::populate_records3('UNIPROT', 'CLINICAL_TRIAL_METADATA');
+
+#foreach my $key (keys(%$multiple_values)) {
+#	my $table = 'CLINICAL_TRIAL_'.uc($key);
+#	generic::datalayer::populate_records3('UNIPROT', $table);
+#}
+
+
